@@ -5,8 +5,6 @@ def load_and_clean_data(file_path):
     """
     Вчитува и обработува CSV фајлот.
 
-    :param file_path: Патека до CSV фајлот.
-    :return: Чистен Pandas DataFrame.
     """
     data = pd.read_csv(file_path)
 
