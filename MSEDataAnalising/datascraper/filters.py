@@ -1,111 +1,67 @@
 import os
+import time
 from datetime import date
 import requests
+import pandas as pd
 from bs4 import BeautifulSoup
-from datascraper.utils import get_10_year_data, get_missing_data, save_company
-from databaseTesting import get_last_date_string
 from concurrent.futures import ThreadPoolExecutor
-from multiprocessing import Process, Manager
-import time
+from data_processing import fetch_decade_data, fetch_incomplete_data, retrieve_last_record_date
 
-
-def worker(companies_subset, max_workers):
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for company in companies_subset:
-            executor.submit(process_company, company)
-
-
-def process_company(company):
-    print("Thread started...")
-    print(f"Processing company: {company[0]}")
-    start_time = time.time()
-
-    if company[1] is None:
-        get_10_year_data(company[0])
-    elif company[1] != date.today():
-        get_missing_data(company[0], company[1])
-
-    end_time = time.time()
-    execution_time = end_time - start_time
-    print("Thread finished in {} seconds".format(execution_time))
-
-
-def filter_1(url):
+def fil1(url):
     response = requests.get(url)
-    raw_html = response.text
-    soup = BeautifulSoup(raw_html, "html.parser")
+    soup = BeautifulSoup(response.text, "html.parser")
     select_menu = soup.find('select', class_='form-control')
-    options = [option.get_text(strip=True) for option in select_menu.find_all('option')]
-    filtered_options = []
-    for option in options:
-        if option.isalpha():
-            filtered_options.append(option)
-            save_company(option)
-            # c = Company(
-            #     name=option
-            # )
-            # c.save()
+    company_options = [option.get_text(strip=True) for option in select_menu.find_all('option')]
 
-    return filtered_options
+    # Filter alphabetic company names only
+    company_names = [name for name in company_options if name.isalpha()]
+    return company_names
 
+def fil2(company_list):
+    last_dates = []
+    for company in company_list:
+        last_dates.append(retrieve_last_record_date(company))
+    return last_dates
 
-def filter_1_corrected(url):
-    response = requests.get(url)
-    raw_html = response.text
-    soup = BeautifulSoup(raw_html, "html.parser")
+def fil3(companies_with_dates):
+    collected_data = []
+    os.makedirs('all_data', exist_ok=True)
+    print("Starting data scraping process...")
 
-    tbodies = soup.find_all('tbody')
-    filtered_options = []
-
-    for tbody in tbodies:
-        for row in tbody.find_all('tr'):
-            symbol_tag = row.find('a')
-            if symbol_tag:
-                symbol = symbol_tag.get_text(strip=True)
-                if symbol.isalpha() and symbol not in filtered_options:
-                    filtered_options.append(symbol)
-
-    return filtered_options
-
-
-def filter_2(companies):
-    companies_last_dates = [get_last_date_string(company) for company in companies]
-    return companies_last_dates
-
-
-def filter_3(companies_last_dates):
-    num_cores = os.cpu_count()
-    max_workers = num_cores
-
-    with Manager() as manager:
-
+    def process_company_data(company):
+        company_name, last_update = company
+        print(f"Processing company: {company_name}")
         start_time = time.time()
-        print("Starting scraping data from MSE...")
 
-        chunk_size = len(companies_last_dates) // num_cores
-        company_chunks = [companies_last_dates[i:i + chunk_size] for i in range(0, len(companies_last_dates), chunk_size)]
+        if last_update is None:
+            collected_data.append(fetch_decade_data(company_name))
+        elif last_update != date.today():
+            fetch_incomplete_data(company_name, last_update)
 
-        processes = []
-        for chunk in company_chunks:
-            p = Process(target=worker, args=(chunk, max_workers))
-            processes.append(p)
-            p.start()
+        print(f"Finished processing {company_name} in {time.time() - start_time:.2f} seconds")
 
-        for p in processes:
-            p.join()
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        executor.map(process_company_data, companies_with_dates)
 
-        end_time = time.time()
-        execution_time = end_time - start_time
-        print(f"Total execution time: {execution_time:.2f} seconds")
-
+    return collected_data
 
 if __name__ == '__main__':
-    # start_time = time.time()
-    # companies = filter_1("https://www.mse.mk/mk/stats/symbolhistory/KMB")
-    # data = filter_2(companies)
-    # filter_3(data)
-    # end_time = time.time()
-    # execution_time = end_time - start_time
-    # print(f"Total execution time: {execution_time:.2f} seconds")
-    comp = filter_1("https://www.mse.mk/mk/stats/symbolhistory/KMB")
-    print(len(comp))
+    start_time = time.time()
+
+    #fetch company names
+    company_url = "https://www.mse.mk/mk/stats/symbolhistory/KMB"
+    company_list = fil1(company_url)
+    print("Company names fetched:", company_list)
+
+    #last update dates for each company
+    companies_with_dates = fil2(company_list)
+
+    #scrape data based on last update dates
+    scraped_data = fil3(companies_with_dates)
+
+    #convert the collected data to a DataFrame
+    data_df = pd.DataFrame(scraped_data)
+    print(data_df)
+
+    print(f"Total execution time: {time.time() - start_time:.2f} seconds")
+    print(f"Total data entries scraped: {len(scraped_data)}")
